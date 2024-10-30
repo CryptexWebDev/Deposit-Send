@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
 	"github.com/CryptexWebDev/Deposit-Send/abi"
 	"github.com/CryptexWebDev/Deposit-Send/abi/abicoder"
@@ -10,40 +11,27 @@ import (
 	"github.com/CryptexWebDev/Deposit-Send/tools/log"
 	"math/big"
 	"os"
+	"regexp"
+	"strings"
 )
 
 var (
-	globalConfigPath = "config.json"
-	config           = &Config{
-		storage: _configDefaultStorage(),
-	}
-	client *drlclient.Client
-
+	client      *drlclient.Client
 	depositData []*DepositData
+
+	isValidPrivateKeyRegexp = regexp.MustCompile("^[A-Fa-f0-9]{64}$")
 )
 
 func main() {
 	fmt.Println("Deposit contract CLI")
-	configStorage, err := storage.NewBinFileStorage("Config", "", "", globalConfigPath)
-	if err != nil {
-		log.Error("Can not get init config storage:", err)
-		os.Exit(-1)
-	}
-	config.storage = configStorage
-	err = config.Load()
-	if err != nil {
-		log.Error("Can not load config:", err)
-		os.Exit(-1)
-	}
 	log.SetLevel(5)
 	log.Info("Node connection settings:")
-	if !config.NodeUseIPC {
-		log.Info("- Node Connection : http-rpc")
-		log.Info("- Node Url        :", config.NodeUrl)
-		log.Info("- Node Port       :", config.NodePort)
+	if !nodeUseIPC {
+		log.Info("- Node Endpoint Connection : http-rpc")
+		log.Info("- Node Url        :", nodeEndpoint)
 	} else {
 		log.Info("- Node Connection: ipc socket")
-		log.Info("- Node ipc Socket Path:", config.NodeIPCSocket)
+		log.Info("- Node ipc Socket Path:", nodeEndpoint)
 	}
 	storageManager, err := storage.NewStorageManager("data")
 	if err != nil {
@@ -66,15 +54,22 @@ func main() {
 		drlclient.WithConfigStorage(clientStorage.GetBinFileStorage("config.json")),
 		drlclient.WithAbiManager(abiManager),
 	}
-	if config.NodeUseIPC {
-		clientOptions = append(clientOptions, drlclient.WithIPCClient(config.NodeIPCSocket))
+	if nodeUseIPC {
+		clientOptions = append(clientOptions, drlclient.WithIPCClient(nodeEndpoint))
 	} else {
+		nodeEndpointParts := strings.Split(nodeEndpoint, ":")
+		if len(nodeEndpointParts) != 2 {
+			log.Error("Invalid node endpoint URL:", nodeEndpoint)
+			os.Exit(-1)
+		}
+		nodeUrl := nodeEndpointParts[0]
+		nodePort := nodeEndpointParts[1]
 		clientOptions = append(clientOptions,
 			drlclient.WithRpcClient(
-				config.NodeUrl,
-				config.NodePort,
-				config.NodeUseSSl,
-				config.AdditionalHeaders,
+				nodeUrl,
+				nodePort,
+				false,
+				nil,
 			),
 		)
 	}
@@ -84,34 +79,49 @@ func main() {
 		log.Error("Can not init chain client:", err)
 		os.Exit(-1)
 	}
+	client.SetDebug(false)
 	log.Info("Blockchain Info:")
 	log.Info("- Chain Name:", client.GetChainName())
 	log.Info("- Chain ID:", client.GetChainId())
-	callData, err := abiManager.CallByMethod(config.DepositContractAddress, "get_deposit_count")
+	callData, err := abiManager.CallByMethod(depositContractAddress, "get_deposit_count")
 	if err != nil {
 		log.Error("Can not prepare deposit count call data:", err)
 		os.Exit(-1)
 	}
-	_, err = client.Call(config.DepositContractAddress, callData)
+	_, err = client.Call(depositContractAddress, callData)
 	if err != nil {
 		log.Error("Can not call deposit count:", err)
 		os.Exit(-1)
 	}
 
-	_searchFile(config.DepositDataPath)
-
-	_, err = abiManager.CallByMethod(config.DepositContractAddress, "get_deposit_root")
+	depositDataList, err := _searchFile(depositDataPath)
+	if err != nil {
+		log.Error("Can not load deposit data:", err)
+		os.Exit(-1)
+	}
+	if len(depositDataList) == 0 {
+		log.Warning("No deposit data found")
+		os.Exit(0)
+	}
+	var depositDataFile string
+	if len(depositDataList) == 1 {
+		depositDataFile = depositDataList[0]
+	} else {
+		log.Info("TODO Select deposit data")
+		os.Exit(0)
+	}
+	_, err = abiManager.CallByMethod(depositContractAddress, "get_deposit_root")
 	if err != nil {
 		log.Error("Can not prepare deposit count call data:", err)
 		os.Exit(-1)
 	}
-	_, err = client.Call(config.DepositContractAddress, callData)
+	_, err = client.Call(depositContractAddress, callData)
 	if err != nil {
 		log.Error("Can not call deposit count:", err)
 		os.Exit(-1)
 	}
 	log.Info("Preload deposit data")
-	err = preloadDepositData()
+	err = preloadDepositData(depositDataFile)
 	if err != nil {
 		log.Error("Can not preload deposit data:", err)
 		os.Exit(-1)
@@ -120,10 +130,18 @@ func main() {
 	for _, dd := range depositData {
 		log.Info("- Pubkey:", dd.Pubkey)
 	}
-	if depositAddressPrivateKey == "" {
+	var depositDataForSend *DepositData
+	if len(depositData) > 1 {
+		log.Warning("Multi deposit data found, todo: select deposit data")
 		os.Exit(0)
+	} else {
+		depositDataForSend = depositData[0]
 	}
-	log.Info("Prepare deposit")
+	if depositAddressPrivateKey == "" {
+		log.Warning("Please set deposit address private key:")
+		depositAddressPrivateKey = askPrivateKey()
+	}
+	log.Info("Prepare deposit...")
 	pkBytes, err := hexnum.ParseHexBytes(depositAddressPrivateKey)
 	if err != nil {
 		log.Error("Can not parse private key:", err)
@@ -134,38 +152,42 @@ func main() {
 		log.Error("Can not get address from private key:", err)
 		os.Exit(-1)
 	}
-	log.Info("Deposit address:", address)
+	log.Warning("Deposit address:", address)
+	confirmed := confirm("Please check and confirm")
+	if !confirmed {
+		log.Warning("Deposit address is not confirmed, cancel deposit send procedure")
+		os.Exit(0)
+	}
 	currentBalance, err := client.GetBalance(address)
 	if err != nil {
 		log.Error("Can not get balance for address:", err)
 		os.Exit(-1)
 	}
 	log.Info("Current balance:", currentBalance)
-	log.Debug("Prepare deposit...")
-	log.Debug("Prepare deposit call data...")
-	log.Debug("Prepare first validator deposit...")
+	log.Debug("- Prepare deposit...")
+	log.Debug("- Prepare deposit call data...")
+	log.Debug("- Prepare first validator deposit...")
 	gasPrice, err := client.GasPrice()
 	log.Info("Expected Gas price:", gasPrice)
 	nonce, err := client.PendingNonceAt(address)
 	log.Info("Expected Nonce:", nonce)
-	validatorDepositData := depositData[0]
-	log.Warning("Validator pub key:", validatorDepositData.Pubkey)
-	paramPubKey, err := hexnum.ParseHexBytes(validatorDepositData.Pubkey)
+	log.Warning("Validator pub key:", depositDataForSend.Pubkey)
+	paramPubKey, err := hexnum.ParseHexBytes(depositDataForSend.Pubkey)
 	if err != nil {
 		log.Error("Can not parse validator pubkey:", err)
 		os.Exit(-1)
 	}
-	paramWithdrawalCredentials, err := hexnum.ParseHexBytes(validatorDepositData.WithdrawalCredentials)
+	paramWithdrawalCredentials, err := hexnum.ParseHexBytes(depositDataForSend.WithdrawalCredentials)
 	if err != nil {
 		log.Error("Can not parse withdrawal credentials:", err)
 		os.Exit(-1)
 	}
-	paramSignature, err := hexnum.ParseHexBytes(validatorDepositData.Signature)
+	paramSignature, err := hexnum.ParseHexBytes(depositDataForSend.Signature)
 	if err != nil {
 		log.Error("Can not parse signature:", err)
 		os.Exit(-1)
 	}
-	paramDataRoot, err := hexnum.ParseHexBytes(validatorDepositData.DepositDataRoot)
+	paramDataRoot, err := hexnum.ParseHexBytes(depositDataForSend.DepositDataRoot)
 	if err != nil {
 		log.Error("Can not parse data root:", err)
 		os.Exit(-1)
@@ -173,26 +195,19 @@ func main() {
 	log.Info("Deposit Data:")
 	log.Info("- Pubkey:", hexnum.BytesToHex(paramPubKey), ",", len(paramPubKey))
 	log.Info("- Withdrawal Credentials:", hexnum.BytesToHex(paramWithdrawalCredentials), ",", len(paramWithdrawalCredentials))
-	log.Info("- Signature:", hexnum.BytesToHex(paramSignature), ",", len(paramSignature))
 	log.Info("- Data Root:", hexnum.BytesToHex(paramDataRoot), ",", len(paramDataRoot))
 	callDataBytes, err := abicoder.EncodeWithSignature("deposit(bytes,bytes,bytes,bytes32)", paramPubKey, paramWithdrawalCredentials, paramSignature, paramDataRoot)
-	//callData, err = abiManager.CallByMethod(config.DepositContractAddress, "deposit",
-	//	paramPubKey,
-	//	paramWithdrawalCredentials,
-	//	paramSignature,
-	//	paramDataRoot,
-	//)
 	if err != nil {
 		log.Error("Can not prepare deposit call data:", err)
 		os.Exit(-1)
 	}
 	callData = hexnum.BytesToHex(callDataBytes)
-	var depositAmount int64 = validatorDepositData.Amount
+	var depositAmount int64 = depositDataForSend.Amount
 	amountBig := big.NewInt(depositAmount).Mul(big.NewInt(depositAmount), big.NewInt(1000000000))
 	log.Info("Deposit amount:", drlclient.WeiToEtherString(amountBig))
-	log.Debug("Deposit call data:", callData)
-	client.SetDebug(true)
-	gas, err := client.GetEstimatedGas(address, config.DepositContractAddress, callData, amountBig)
+	//log.Debug("Deposit call data:", callData)
+	client.SetDebug(false)
+	gas, err := client.GetEstimatedGas(address, depositContractAddress, callData, amountBig)
 	if err != nil {
 		log.Error("Can not get estimated gas for deposit:", err)
 		os.Exit(-1)
@@ -202,11 +217,40 @@ func main() {
 	if dryRun {
 		os.Exit(0)
 	}
-	//privateKey, from, to, data string, amount *big.Int)
-	txId, err := client.SendTransactionByPrivateKey(depositAddressPrivateKey, address, config.DepositContractAddress, callData, amountBig)
+
+	txId, err := client.SendTransactionByPrivateKey(depositAddressPrivateKey, address, depositContractAddress, callData, amountBig)
 	if err != nil {
 		log.Error("Can not send deposit transaction:", err)
 		os.Exit(-1)
 	}
 	log.Info("Deposit transaction sent:", txId)
+}
+
+func askPrivateKey() string {
+	reader := bufio.NewReader(os.Stdin)
+	fmt.Print("private key: ")
+	text, _ := reader.ReadString('\n')
+	text = strings.TrimSuffix(text, "\n")
+	if text == "" {
+		return askPrivateKey()
+	}
+	if !isValidPrivateKey(text) {
+		log.Error("Invalid private key, please enter valid private key")
+		return askPrivateKey()
+	}
+	return text
+}
+
+func isValidPrivateKey(hex string) bool {
+	return isValidPrivateKeyRegexp.MatchString(strings.TrimPrefix(hex, "0x"))
+}
+
+func confirm(message string) bool {
+	reader := bufio.NewReader(os.Stdin)
+	fmt.Print(message, "(y/n): ")
+	text, _ := reader.ReadString('\n')
+	if text[0] != 'y' && text[0] != 'Y' && text[0] != 'n' && text[0] != 'N' {
+		return confirm(message)
+	}
+	return text[0] == 'y' || text[0] == 'Y'
 }

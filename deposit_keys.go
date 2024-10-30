@@ -17,8 +17,8 @@ type DepositData struct {
 	DepositCliVersion     string `json:"deposit_cli_version"`
 }
 
-func preloadDepositData() error {
-	dataBytes, err := os.ReadFile(config.DepositDataPath)
+func preloadDepositData(depositDataPath string) error {
+	dataBytes, err := os.ReadFile(depositDataPath)
 	if err != nil {
 		return err
 	}
