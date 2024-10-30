@@ -12,6 +12,7 @@ import (
 	"math/big"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -107,7 +108,7 @@ func main() {
 	if len(depositDataList) == 1 {
 		depositDataFile = depositDataList[0]
 	} else {
-		log.Info("TODO Select deposit data")
+		log.Info("TODO Select deposit data file")
 		os.Exit(0)
 	}
 	_, err = abiManager.CallByMethod(depositContractAddress, "get_deposit_root")
@@ -127,13 +128,18 @@ func main() {
 		os.Exit(-1)
 	}
 	log.Info("Deposit data loaded")
-	for _, dd := range depositData {
-		log.Info("- Pubkey:", dd.Pubkey)
-	}
+	//for _, dd := range depositData {
+	//	log.Info("- Pubkey:", dd.Pubkey)
+	//}
 	var depositDataForSend *DepositData
 	if len(depositData) > 1 {
-		log.Warning("Multi deposit data found, todo: select deposit data")
-		os.Exit(0)
+		depositPubList := make([]string, len(depositData))
+		for i, dd := range depositData {
+			depositPubList[i] = dd.Pubkey
+		}
+		chosen := choseOneOf("Multiple deposit data files found, please select one", depositPubList, 0)
+		log.Info("Chosen deposit data:", depositData[chosen].Pubkey)
+		depositDataForSend = depositData[chosen]
 	} else {
 		depositDataForSend = depositData[0]
 	}
@@ -253,4 +259,32 @@ func confirm(message string) bool {
 		return confirm(message)
 	}
 	return text[0] == 'y' || text[0] == 'Y'
+}
+
+func choseOneOf(message string, choices []string, defaultChoice int) int {
+	var ask func() int
+	ask = func() int {
+		reader := bufio.NewReader(os.Stdin)
+		fmt.Print("Select: [default - ", defaultChoice, "]: ")
+		text, _ := reader.ReadString('\n')
+		text = strings.TrimSuffix(text, "\n")
+		if text == "" {
+			return defaultChoice
+		}
+		chosen, err := strconv.Atoi(text)
+		if err != nil {
+			fmt.Println("Invalid choice, please enter value from 0 to ", len(choices)-1)
+			return ask()
+		}
+		if chosen < 0 || chosen >= len(choices) {
+			fmt.Println("Invalid choice, please enter value from 0 to ", len(choices)-1)
+			return ask()
+		}
+		return chosen
+	}
+	fmt.Println(message, ": ")
+	for i, c := range choices {
+		fmt.Println(i, ":", c)
+	}
+	return ask()
 }
