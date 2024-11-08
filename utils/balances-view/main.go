@@ -4,13 +4,13 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"github.com/CryptexWebDev/Deposit-Send/clients/microrest"
 	"github.com/CryptexWebDev/Deposit-Send/tools"
-	"github.com/CryptexWebDev/Deposit-Send/tools/log"
-	"github.com/CryptexWebDev/Deposit-Send/tools/microrest"
 	"github.com/gosuri/uitable"
 	"net/url"
 	"os"
 	"path"
+	"strings"
 )
 
 const (
@@ -41,26 +41,33 @@ func main() {
 	depositData, err := readDepositData(validatorKeysDir, depositDataFiles)
 	table := uitable.New()
 	table.Separator = " | "
-	table.AddRow("Index", "Pubkey", "Status", "Balance")
+	table.AddRow("Index", "Pubkey", "Status", "Withdrawal", "Balance")
 	for i, row := range depositData {
-		validatorInfo := &ValidatorInfo{}
+		validatorInfo := &ValidatorResponse{}
 		req, _ := url.JoinPath(VALIDATOR_STATUS_REQUEST, "0x"+row.Pubkey)
 		err := rest.Get(req, validatorInfo)
 		if err != nil {
 			fmt.Println("Can not get validator info:", err)
 			return
 		}
-		log.Dump(validatorInfo)
-		var status, balance string
-		if validatorInfo.ErrorCode != 400 {
+		var status, balance, withdrawalCredentials string
+		if validatorInfo.ErrorCode == 404 {
 			status = "not shown in blockchain"
 			balance = "n/a"
+			withdrawalCredentials = "n/a"
 		} else {
-			status = validatorInfo.Status
-			balance = validatorInfo.Balance
+			status = validatorInfo.Data.Status
+			balance = validatorInfo.Data.Balance
+			if validatorInfo.Data.Validator.WithdrawalCredentials != "" {
+				if strings.HasPrefix(validatorInfo.Data.Validator.WithdrawalCredentials, "0x01") {
+					withdrawalCredentials = "set"
+				} else {
+					withdrawalCredentials = "not set"
+				}
+			}
 
 		}
-		table.AddRow(i, row.Pubkey, status, balance)
+		table.AddRow(i, row.Pubkey, status, withdrawalCredentials, balance)
 	}
 	fmt.Println(table)
 }
@@ -85,6 +92,27 @@ type ValidatorInfo struct {
 		ExitEpoch                  string `json:"exit_epoch"`
 		WithdrawableEpoch          string `json:"withdrawable_epoch"`
 	} `json:"validator"`
+}
+
+type ValidatorResponse struct {
+	ErrorCode           int  `json:"code"`
+	ExecutionOptimistic bool `json:"execution_optimistic"`
+	Finalized           bool `json:"finalized"`
+	Data                struct {
+		Index     string `json:"index"`
+		Balance   string `json:"balance"`
+		Status    string `json:"status"`
+		Validator struct {
+			Pubkey                     string `json:"pubkey"`
+			WithdrawalCredentials      string `json:"withdrawal_credentials"`
+			EffectiveBalance           string `json:"effective_balance"`
+			Slashed                    bool   `json:"slashed"`
+			ActivationEligibilityEpoch string `json:"activation_eligibility_epoch"`
+			ActivationEpoch            string `json:"activation_epoch"`
+			ExitEpoch                  string `json:"exit_epoch"`
+			WithdrawableEpoch          string `json:"withdrawable_epoch"`
+		} `json:"validator"`
+	} `json:"data"`
 }
 
 func init() {

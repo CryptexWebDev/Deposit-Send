@@ -6,6 +6,7 @@ require (
 	github.com/DeepForestTeam/go-logging v0.0.0-20160708070724-8f08274c3b08
 	github.com/dgraph-io/badger v1.6.2
 	github.com/ethereum/go-ethereum v1.14.11
+	github.com/gosuri/uitable v0.0.4
 	github.com/holiman/uint256 v1.3.1
 	github.com/stretchr/testify v1.9.0
 	github.com/timshannon/badgerhold v1.0.0
@@ -25,7 +26,6 @@ require (
 	github.com/fatih/color v1.16.0 // indirect
 	github.com/golang/protobuf v1.5.4 // indirect
 	github.com/google/go-cmp v0.6.0 // indirect
-	github.com/gosuri/uitable v0.0.4 // indirect
 	github.com/mattn/go-colorable v0.1.13 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/mattn/go-runewidth v0.0.13 // indirect

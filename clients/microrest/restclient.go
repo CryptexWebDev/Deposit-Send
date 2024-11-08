@@ -3,7 +3,6 @@ package microrest
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"net/url"
 )
@@ -22,7 +21,6 @@ type RestClient struct {
 
 func (r *RestClient) Get(req string, responseObject interface{}) (err error) {
 	reqUrl, _ := url.JoinPath(r.restBaseUrl, req)
-	fmt.Println("Request:", reqUrl)
 	httpRequest, err := http.NewRequest("GET", reqUrl, nil)
 	httpRequest.Header.Set("Content-Type", "application/json")
 	httpResponse, err := r.http.Do(httpRequest)
@@ -30,9 +28,6 @@ func (r *RestClient) Get(req string, responseObject interface{}) (err error) {
 		return err
 	}
 	defer httpResponse.Body.Close()
-	var body []byte
-	httpResponse.Body.Read(body)
-	fmt.Println("Server response:", httpResponse.Status, string(body))
 	if httpResponse.StatusCode == http.StatusInternalServerError || httpResponse.StatusCode == http.StatusBadRequest {
 		return errors.New("invalid server response: " + httpResponse.Status)
 	}
